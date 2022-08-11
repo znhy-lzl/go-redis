@@ -1,2 +1,2 @@
 # go-redis
-golang实现redis
+基于golang实现redis
