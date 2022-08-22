@@ -2,6 +2,7 @@ package parser
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"go-redis/interface/resp"
 	"go-redis/lib/logger"
@@ -18,13 +19,6 @@ type Payload struct {
 	Err  error
 }
 
-// ParseStream reads data from io.Reader and send payloads through channel
-func ParseStream(reader io.Reader) <-chan *Payload {
-	ch := make(chan *Payload)
-	go parse0(reader, ch)
-	return ch
-}
-
 type readState struct {
 	readingMultiLine  bool
 	expectedArgsCount int
@@ -35,6 +29,46 @@ type readState struct {
 
 func (s *readState) finished() bool {
 	return s.expectedArgsCount > 0 && len(s.args) == s.expectedArgsCount
+}
+
+// ParseStream reads data from io.Reader and send payloads through channel
+func ParseStream(reader io.Reader) <-chan *Payload {
+	ch := make(chan *Payload)
+	go parse0(reader, ch)
+	return ch
+}
+
+// ParseBytes reads data from []byte and return all replies
+func ParseBytes(data []byte) ([]resp.Reply, error) {
+	ch := make(chan *Payload)
+	reader := bytes.NewReader(data)
+	go parse0(reader, ch)
+	var results []resp.Reply
+	for payload := range ch {
+		if payload == nil {
+			return nil, errors.New("no reply")
+		}
+		if payload.Err != nil {
+			if payload.Err == io.EOF {
+				break
+			}
+			return nil, payload.Err
+		}
+		results = append(results, payload.Data)
+	}
+	return results, nil
+}
+
+// ParseOne reads data from []byte and return the first payload
+func ParseOne(data []byte) (resp.Reply, error) {
+	ch := make(chan *Payload)
+	reader := bytes.NewReader(data)
+	go parse0(reader, ch)
+	payload := <-ch // parse0 will close the channel
+	if payload == nil {
+		return nil, errors.New("no reply")
+	}
+	return payload.Data, payload.Err
 }
 
 func parse0(reader io.Reader, ch chan<- *Payload) {
@@ -68,6 +102,7 @@ func parse0(reader io.Reader, ch chan<- *Payload) {
 		}
 
 		// parse line
+		// 判断是不是多行解析模式
 		if !state.readingMultiLine {
 			// receive new response
 			if msg[0] == '*' {
@@ -141,6 +176,7 @@ func parse0(reader io.Reader, ch chan<- *Payload) {
 	}
 }
 
+// 读取以\r\n结尾的一行
 func readLine(bufReader *bufio.Reader, state *readState) ([]byte, bool, error) {
 	var msg []byte
 	var err error
@@ -166,6 +202,7 @@ func readLine(bufReader *bufio.Reader, state *readState) ([]byte, bool, error) {
 	return msg, false, nil
 }
 
+//*3\r\n$3\r\nset\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
 func parseMultiBulkHeader(msg []byte, state *readState) error {
 	var err error
 	var expectedLine uint64
@@ -188,6 +225,7 @@ func parseMultiBulkHeader(msg []byte, state *readState) error {
 	}
 }
 
+//$9\r\nimooc.com\r\n
 func parseBulkHeader(msg []byte, state *readState) error {
 	var err error
 	state.bulkLen, err = strconv.ParseInt(string(msg[1:len(msg)-2]), 10, 64)
@@ -207,6 +245,7 @@ func parseBulkHeader(msg []byte, state *readState) error {
 	}
 }
 
+//+OK\r\n 或者 -err\r\n 或者 :5\r\n
 func parseSingleLineReply(msg []byte) (resp.Reply, error) {
 	str := strings.TrimSuffix(string(msg), "\r\n")
 	var result resp.Reply
@@ -226,8 +265,9 @@ func parseSingleLineReply(msg []byte) (resp.Reply, error) {
 }
 
 // read the non-first lines of multi bulk reply or bulk reply
+// 如：$3\r\nset\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
 func readBody(msg []byte, state *readState) error {
-	line := msg[0 : len(msg)-2]
+	line := msg[0 : len(msg)-2] // trim \r\n
 	var err error
 	if line[0] == '$' {
 		// bulk reply
