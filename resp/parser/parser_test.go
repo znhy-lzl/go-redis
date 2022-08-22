@@ -54,3 +54,28 @@ func TestParseStream(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOne(t *testing.T) {
+	replies := []resp.Reply{
+		reply.MakeIntReply(1),
+		reply.MakeStatusReply("OK"),
+		reply.MakeErrReply("ERR unknown"),
+		reply.MakeBulkReply([]byte("a\r\nb")), // test binary safe
+		reply.MakeNullBulkReply(),
+		reply.MakeMultiBulkReply([][]byte{
+			[]byte("a"),
+			[]byte("\r\n"),
+		}),
+		reply.MakeEmptyMultiBulkReply(),
+	}
+	for _, re := range replies {
+		result, err := ParseOne(re.ToBytes())
+		if err != nil {
+			t.Error(err)
+			continue
+		}
+		if utils.BytesEquals(result.ToBytes(), re.ToBytes()) {
+			t.Error("parse failed: " + string(re.ToBytes()))
+		}
+	}
+}
